@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "VTOP Session Keeper",
+  "version": "1.0.0",
+  "description": "Navigates open VTOP tabs to the Home page every 9 minutes.",
+  "permissions": [
+    "alarms",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://vtop.vit.ac.in/vtop/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "action": {
+    "default_title": "VTOP Session Keeper",
+    "default_popup": "popup.html"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "vtop-session-keeper@local"
+    }
+  }
+}
