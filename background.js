@@ -1,75 +1,113 @@
-const HOME_URL = "https://vtop.vit.ac.in/vtop/content";
+
 const VTOP_MATCH = "https://vtop.vit.ac.in/vtop/*";
-const ALARM_NAME = "vtop-session-keepalive";
-const INTERVAL_MINUTES = 9;
+const ALARM_NAME = "vtop-inactivity-check";
+const INACTIVITY_MS = 9 * 60 * 1000;
 
-async function enabled() {
-  const value = await browser.storage.local.get({ enabled: true });
-  return value.enabled !== false;
-}
-
-async function vtopTabs() {
-  return browser.tabs.query({ url: VTOP_MATCH });
+async function isEnabled() {
+  const result = await browser.storage.local.get({ enabled: true });
+  return result.enabled !== false;
 }
 
 async function syncAlarm() {
-  const on = await enabled();
-  const tabs = on ? await vtopTabs() : [];
-  if (!on || tabs.length === 0) {
+  if (!(await isEnabled())) {
     await browser.alarms.clear(ALARM_NAME);
     return;
   }
-  if (!(await browser.alarms.get(ALARM_NAME))) {
-    browser.alarms.create(ALARM_NAME, {
-      delayInMinutes: INTERVAL_MINUTES,
-      periodInMinutes: INTERVAL_MINUTES
-    });
-  }
-}
 
-async function keepSessionActive() {
-  if (!(await enabled())) {
-    await browser.alarms.clear(ALARM_NAME);
-    return;
-  }
-  const tabs = await vtopTabs();
+  const tabs = await browser.tabs.query({ url: VTOP_MATCH });
+
   if (tabs.length === 0) {
     await browser.alarms.clear(ALARM_NAME);
     return;
   }
 
+  if (!(await browser.alarms.get(ALARM_NAME))) {
+    browser.alarms.create(ALARM_NAME, {
+      delayInMinutes: 1,
+      periodInMinutes: 1
+    });
+  }
+}
+
+browser.runtime.onMessage.addListener(async (message, sender) => {
+  if (message.type !== "VTOP_ACTIVITY") return;
+
+  if (typeof sender.tab?.id !== "number") return;
+
+  await browser.storage.local.set({
+    [`lastActivity_${sender.tab.id}`]: Date.now()
+  });
+});
+
+async function checkInactivity() {
+  if (!(await isEnabled())) return;
+
+  const tabs = await browser.tabs.query({ url: VTOP_MATCH });
+
   for (const tab of tabs) {
     if (typeof tab.id !== "number") continue;
-    try {
-      if (tab.url === HOME_URL) {
-        await browser.tabs.reload(tab.id);
-      } else {
-        // Updating a background tab does not focus it.
-        await browser.tabs.update(tab.id, { url: HOME_URL });
+
+    const key = `lastActivity_${tab.id}`;
+    const saved = await browser.storage.local.get(key);
+
+    if (typeof saved[key] !== "number") {
+      await browser.storage.local.set({
+        [key]: Date.now()
+      });
+      continue;
+    }
+
+    const inactiveFor = Date.now() - saved[key];
+
+    if (inactiveFor >= INACTIVITY_MS) {
+      // Reset the timestamp before sending the request to avoid
+      // repeated triggers while the page is processing it.
+      await browser.storage.local.set({
+        [key]: Date.now()
+      });
+
+      try {
+        await browser.tabs.sendMessage(tab.id, {
+          type: "VTOP_KEEPALIVE"
+        });
+      } catch (error) {
+        console.warn("Could not contact VTOP tab:", error);
       }
-    } catch (error) {
-      console.warn("Could not navigate VTOP tab:", error);
     }
   }
 }
 
+browser.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === ALARM_NAME) {
+    checkInactivity();
+  }
+});
+
 browser.runtime.onInstalled.addListener(async () => {
   const saved = await browser.storage.local.get("enabled");
+
   if (typeof saved.enabled !== "boolean") {
     await browser.storage.local.set({ enabled: true });
   }
+
   await syncAlarm();
 });
+
 browser.runtime.onStartup.addListener(syncAlarm);
+
 browser.tabs.onCreated.addListener(syncAlarm);
 browser.tabs.onUpdated.addListener((_id, change) => {
   if (change.url) syncAlarm();
 });
-browser.tabs.onRemoved.addListener(syncAlarm);
+browser.tabs.onRemoved.addListener(async tabId => {
+  await browser.storage.local.remove(`lastActivity_${tabId}`);
+  await syncAlarm();
+});
+
 browser.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.enabled) syncAlarm();
+  if (area === "local" && changes.enabled) {
+    syncAlarm();
+  }
 });
-browser.alarms.onAlarm.addListener(alarm => {
-  if (alarm.name === ALARM_NAME) keepSessionActive();
-});
+
 syncAlarm();
